@@ -992,7 +992,11 @@ setup(void)
 
 	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
+#ifdef __CYGWIN__
+	sa.sa_flags = SA_NOCLDSTOP | SA_RESTART;
+#else
 	sa.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;
+#endif
 	sa.sa_handler = SIG_IGN;
 	sigaction(SIGCHLD, &sa, NULL);
 
