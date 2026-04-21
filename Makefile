@@ -8,6 +8,7 @@ PREFIX = /usr/local
 MANPREFIX = ${PREFIX}/share/man
 DOCPREFIX = ${PREFIX}/share/doc/${NAME}
 
+CFLAGS = -O3
 # use system flags.
 TABBED_CFLAGS = -I/usr/X11R6/include -I/usr/include/freetype2 ${CFLAGS}
 TABBED_LDFLAGS = -L/usr/X11R6/lib -lX11 -lfontconfig -lXft ${LDFLAGS}
@@ -37,7 +38,7 @@ config.h:
 	${CC} -o $@ $< ${TABBED_LDFLAGS}
 
 clean:
-	rm -f ${BIN} ${OBJ} "${NAME}-${VERSION}.tar.gz"
+	rm -f ${BIN} ${OBJ} "${NAME}-${VERSION}.tar.gz" config.h
 
 dist: clean
 	mkdir -p "${NAME}-${VERSION}"
