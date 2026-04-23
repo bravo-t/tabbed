@@ -759,7 +759,6 @@ manage(Window w)
     c->spid = -1;
     c->cpid = -1;
     c->summary[0] = '\0';
-    printf("DEBUG: tab process pid: %d\n", c->pid);
 
 		nclients++;
 		clients = erealloc(clients, sizeof(Client *) * nclients);
@@ -1405,7 +1404,6 @@ main(int argc, char *argv[])
 		die("%s: cannot open display\n", argv0);
 
 	setup();
-	printf("0x%lx\n", win);
 	fflush(NULL);
 
 	if (detach) {
@@ -1443,7 +1441,6 @@ pid_t get_client_pid(Window w)
 size_t 
 ssplit(char* str, const char* sep, char** segs)
 {
-  printf("DEBUG: split %s\n", str);
   char* rest = NULL;
   char* token;
   size_t i = 0;
@@ -1451,7 +1448,6 @@ ssplit(char* str, const char* sep, char** segs)
        token != NULL; 
        token = strtok_r(NULL, sep, &rest), ++i)
   {
-    printf("DEBUG: seg: %s\n", token);
     segs[i] = token;
   }
   return i;
@@ -1460,7 +1456,6 @@ ssplit(char* str, const char* sep, char** segs)
 Bool
 is_ppid_match(const char* f, pid_t ppid)
 {
-  printf("DEBUG: Try get ppid from %s\n", f);
   Bool match = False;
   FILE* fp = fopen(f, "r");
   if (fp == NULL) {
@@ -1471,7 +1466,6 @@ is_ppid_match(const char* f, pid_t ppid)
   char buffer[MAX_LEN];
   while (fgets(buffer, MAX_LEN, fp))
   {
-    //printf("%s", buffer);
     size_t startpos = 0;
     for (; startpos < MAX_LEN; ++startpos) {
       if (buffer[startpos] != ' ') {
@@ -1486,7 +1480,6 @@ is_ppid_match(const char* f, pid_t ppid)
       for (size_t i=startpos+5;;++i) {
         char d = buffer[i];
         if (d == '\n' || d == '\r') {
-          printf("DEBUG: Found ppid %d\n", line_pid);
           if (line_pid == ppid) {
             match = True;
           }
@@ -1506,7 +1499,6 @@ is_ppid_match(const char* f, pid_t ppid)
 pid_t
 find_child_pid(pid_t ppid)
 {
-  printf("DEBUG: find_child_pid for pid %d\n", ppid);
   char path_buffer[4096];
   struct dirent* ep;
   struct stat path_stat;
@@ -1530,7 +1522,6 @@ find_child_pid(pid_t ppid)
               cpid = cpid * 10 + (d - '0');
             }
           }
-          printf("DEBUG: Found proc pid %d matches ppid %d\n", cpid, ppid);
           return cpid;
         }
       }
@@ -1542,12 +1533,9 @@ find_child_pid(pid_t ppid)
 void 
 get_cmd_from_pid(pid_t pid, char* cmd)
 {
-  printf("DEBUG: enter pid: %d\n", pid);
   cmd[0] = '\0';
-  printf("DEBUG: set 0: %d\n", pid);
   char path_buffer[4096];
   sprintf(path_buffer, "/proc/%d/cmdline", pid);
-  printf("DEBUG: cmdline file: %s\n", path_buffer);
   FILE* fp = fopen(path_buffer, "r");
   if (fp == NULL) {
     return;
@@ -1556,7 +1544,6 @@ get_cmd_from_pid(pid_t pid, char* cmd)
   size_t MAX_LEN = 4096;
   char buffer[MAX_LEN];
   if (fgets(buffer, MAX_LEN, fp)) {
-    printf("DEBUG: line: %s\n", buffer);
     char* segs[256] = {NULL};
     size_t length = ssplit(buffer, "/", segs);
     if (length > 0) {
@@ -1572,13 +1559,10 @@ find_child_cmd(pid_t ppid, char* cmd, pid_t* cpid, pid_t* shellpid)
 {
   cmd[0] = '\0';
   *cpid = find_child_pid(ppid);
-  printf("DEBUG: cpid %d found\n", *cpid);
   if (*cpid == -1) {
     return;
   }
-  printf("DEBUG: get_cmd_from_pid from %d\n", *cpid);
   get_cmd_from_pid(*cpid, cmd);
-  printf("DEBUG: child cmd: %s\n", cmd);
   if (strlen(cmd) == 0) {
     *cpid = -1;
     return;
@@ -1635,7 +1619,6 @@ get_client_summary_raw(pid_t client_pid, char* summary,
     *spid = shell_pid;
     *cpid = child_pid;
     char* child_cwd = getcwd_by_pid(shell_pid);
-    printf("DEBUG: child cwd: %s\n", child_cwd);
     if (strcmp(child_cwd, "/") == 0) {
       summary[0] = '/';
       summary[1] = '\0';
@@ -1655,7 +1638,6 @@ is_cpid_ppid_match(pid_t cpid, pid_t ppid)
 {
   char path_buffer[4096];
   sprintf(path_buffer, "/proc/%d/status", cpid);
-  printf("DEBUG: Check cpid match using %s\n", path_buffer);
   return is_ppid_match(path_buffer, ppid);
 }
 
@@ -1708,14 +1690,11 @@ update_client_summary(Client* c)
 {
   if (update_summary == True) {
     if (is_cached_cpid_valid(c->spid, c->pid) == False) {
-      printf("DEBUG: Both spid and cpid for pid %d is not valid\n", c->pid);
       get_client_summary_raw(c->pid, c->summary, &(c->spid), &(c->cpid));
     } else if (is_cached_cpid_valid(c->cpid, c->spid) == False) {
-      printf("DEBUG: spid %d is valid for pid %d, cpid is not\n", c->spid, c->pid);
       pid_t cpid = find_child_pid(c->spid);
       if (cpid != c->cpid) {
         c->cpid = cpid;
-        printf("DEBUG: cpid %d found\n", cpid);
         if (cpid == -1) {
           get_shell_summary(c->spid, c->summary);
         } else {
@@ -1723,7 +1702,7 @@ update_client_summary(Client* c)
         }
       }
     } else {
-      printf("DEBUG: spid %d and cpid %d is valid for pid %d\n", c->spid, c->cpid, c->pid);
+      //printf("DEBUG: spid %d and cpid %d is valid for pid %d\n", c->spid, c->cpid, c->pid);
     }
   }
   if (c->summary[0] == '\0') {
