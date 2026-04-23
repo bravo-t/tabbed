@@ -20,6 +20,10 @@
 
 #include "arg.h"
 
+#include <sys/types.h>
+#include <dirent.h>
+#include <limits.h>
+ 
 /* XEMBED messages */
 #define XEMBED_EMBEDDED_NOTIFY          0
 #define XEMBED_WINDOW_ACTIVATE          1
@@ -50,7 +54,7 @@
 
 enum { ColFG, ColBG, ColLast };       /* color */
 enum { WMProtocols, WMDelete, WMName, WMState, WMFullscreen,
-       XEmbed, WMSelectTab, WMLast }; /* default atoms */
+       XEmbed, WMSelectTab, WMPID, WMLast }; /* default atoms */
 
 typedef union {
 	int i;
@@ -85,6 +89,7 @@ typedef struct {
 	int tabx;
 	Bool urgent;
 	Bool closed;
+  pid_t pid;
 } Client;
 
 /* function declarations */
@@ -135,6 +140,9 @@ static void updatenumlockmask(void);
 static void updatetitle(int c);
 static int xerror(Display *dpy, XErrorEvent *ee);
 static void xsettitle(Window w, const char *str);
+
+static pid_t get_client_pid(Window w);
+static void get_client_summary(pid_t client_pid, char* summary);
 
 /* variables */
 static int screen;
@@ -326,6 +334,7 @@ drawbar(void)
 	XftColor *col;
 	int c, cc, fc, width;
 	char *name = NULL;
+  char summary[4096];
 
 	if (nclients == 0) {
 		dc.x = 0;
@@ -368,6 +377,14 @@ drawbar(void)
 			col = clients[c]->urgent ? dc.urg : dc.norm;
 		}
 		drawtext(clients[c]->name, col);
+    
+    get_client_summary(clients[c]->pid, summary);
+    printf("DEBUG: client %d summary: %s\n", c, summary);
+    if (summary[0] != '\0') {
+		  drawtext(summary, col);
+    } else {
+		  drawtext(clients[c]->name, col);
+    }
 		dc.x += dc.w;
 		clients[c]->tabx = dc.x;
 	}
@@ -737,6 +754,8 @@ manage(Window w)
 
 		c = ecalloc(1, sizeof *c);
 		c->win = w;
+    c->pid = get_client_pid(w);
+    printf("DEBUG: tab process pid: %d\n", c->pid);
 
 		nclients++;
 		clients = erealloc(clients, sizeof(Client *) * nclients);
@@ -1018,6 +1037,7 @@ setup(void)
 	wmatom[WMSelectTab] = XInternAtom(dpy, "_TABBED_SELECT_TAB", False);
 	wmatom[WMState] = XInternAtom(dpy, "_NET_WM_STATE", False);
 	wmatom[XEmbed] = XInternAtom(dpy, "_XEMBED", False);
+  wmatom[WMPID] = XInternAtom(dpy, "_NET_WM_PID", False);
 
 	/* init appearance */
 	wx = 0;
@@ -1395,4 +1415,216 @@ main(int argc, char *argv[])
 	XCloseDisplay(dpy);
 
 	return EXIT_SUCCESS;
+}
+
+pid_t get_client_pid(Window w)
+{
+  pid_t pid = -1;
+  Atom actualType;
+  int actualFormat;
+  unsigned long nitems, bytesAfter;
+  unsigned char *prop;
+  if (XGetWindowProperty(dpy, w, wmatom[WMPID], 0, 1, False, XA_CARDINAL,
+        &actualType, &actualFormat, &nitems, &bytesAfter, &prop) == Success && prop) {
+    pid = *((pid_t *)prop);
+    XFree(prop);
+  }
+  return pid;
+}
+
+size_t 
+ssplit(char* str, const char* sep, char** segs)
+{
+  printf("DEBUG: split %s\n", str);
+  char* rest = NULL;
+  char* token;
+  size_t i = 0;
+  for (token = strtok_r(str, sep, &rest); 
+       token != NULL; 
+       token = strtok_r(NULL, sep, &rest), ++i)
+  {
+    printf("DEBUG: seg: %s\n", token);
+    segs[i] = token;
+  }
+  return i;
+}
+
+Bool
+is_ppid_match(const char* f, pid_t ppid)
+{
+  printf("DEBUG: Try get ppid from %s\n", f);
+  Bool match = False;
+  FILE* fp = fopen(f, "r");
+  if (fp == NULL) {
+    return -1;
+  }
+  
+  size_t MAX_LEN = 4096;
+  char buffer[MAX_LEN];
+  while (fgets(buffer, MAX_LEN, fp))
+  {
+    //printf("%s", buffer);
+    size_t startpos = 0;
+    for (; startpos < MAX_LEN; ++startpos) {
+      if (buffer[startpos] != ' ') {
+        break;
+      }
+    }
+    if (startpos > MAX_LEN - 5) {
+      continue;
+    }
+    if (strncmp(buffer+startpos, "PPid:", 5) == 0) {
+      pid_t line_pid = 0;
+      for (size_t i=startpos+5;;++i) {
+        char d = buffer[i];
+        if (d == '\n' || d == '\r') {
+          printf("DEBUG: Found ppid %d\n", line_pid);
+          if (line_pid == ppid) {
+            match = True;
+          }
+          break;
+        }
+        if (d >= '0' && d <= '9') {
+          line_pid = line_pid * 10 + (d - '0');
+        }
+      }
+      break;
+    }
+  }
+  fclose(fp);
+  return match;
+}
+
+pid_t
+find_child_pid(pid_t ppid)
+{
+  printf("DEBUG: find_child_pid for pid %d\n", ppid);
+  char path_buffer[4096];
+  struct dirent* ep;
+  DIR* dp = opendir("/proc");
+  if (dp != NULL) {
+    while ((ep = readdir(dp)) != NULL) {
+      if (ep->d_type == DT_DIR) {
+        sprintf(path_buffer, "/proc/%s/status", ep->d_name);
+        if (is_ppid_match(path_buffer, ppid) == True) {
+          const char* cpid_str = ep->d_name;
+          size_t len = strlen(cpid_str);
+          pid_t cpid = 0;
+          for (size_t i=0; i<len; ++i) {
+            char d = cpid_str[i];
+            if (d >= '0' && d <= '9') {
+              cpid = cpid * 10 + (d - '0');
+            }
+          }
+          printf("DEBUG: Found proc pid %d matches ppid %d\n", cpid, ppid);
+          return cpid;
+        }
+      }
+    }
+  }
+  return -1;
+}
+
+void 
+get_cmd_from_pid(pid_t pid, char* cmd)
+{
+  printf("DEBUG: enter pid: %d\n", pid);
+  cmd[0] = '\0';
+  printf("DEBUG: set 0: %d\n", pid);
+  char path_buffer[4096];
+  sprintf(path_buffer, "/proc/%d/cmdline", pid);
+  printf("DEBUG: cmdline file: %s\n", path_buffer);
+  FILE* fp = fopen(path_buffer, "r");
+  if (fp == NULL) {
+    return;
+  }
+  
+  size_t MAX_LEN = 4096;
+  char buffer[MAX_LEN];
+  if (fgets(buffer, MAX_LEN, fp)) {
+    printf("DEBUG: line: %s\n", buffer);
+    char* segs[256] = {NULL};
+    size_t length = ssplit(buffer, "/", segs);
+    if (length > 0) {
+      strcpy(cmd, segs[length-1]);
+    }
+  }
+}
+
+static const char* popular_shell[] = {"sh", "bash", "tcsh", "csh", "zsh", "fish"};
+
+void 
+find_child_cmd(pid_t ppid, char* cmd, pid_t* cpid, pid_t* shellpid)
+{
+  cmd[0] = '\0';
+  *cpid = find_child_pid(ppid);
+  printf("DEBUG: cpid %d found\n", *cpid);
+  if (*cpid == -1) {
+    return;
+  }
+  printf("DEBUG: get_cmd_from_pid from %d\n", *cpid);
+  get_cmd_from_pid(*cpid, cmd);
+  printf("DEBUG: child cmd: %s\n", cmd);
+  if (strlen(cmd) == 0) {
+    *cpid = -1;
+    return;
+  } else {
+    Bool find_deeper = False;
+    size_t i;
+	  for (i = 0; i < LENGTH(popular_shell); i++) {
+      if (strcmp(popular_shell[i], cmd) == 0) {
+        *shellpid = *cpid;
+        find_deeper = True;
+        break;
+      }
+    }
+    if (find_deeper) {
+      ppid = *cpid;
+      find_child_cmd(ppid, cmd, cpid, shellpid);
+    }
+  }
+}
+
+static char* 
+getcwd_by_pid(pid_t pid) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "/proc/%d/cwd", pid);
+  return realpath(buf, NULL);
+}
+
+void 
+get_client_summary(pid_t client_pid, char* summary)
+{
+  summary[0] = '\0';
+  char cmd[4096] = {'\0'};
+  pid_t child_pid; 
+  pid_t shell_pid = -1;
+  find_child_cmd(client_pid, cmd, &child_pid, &shell_pid);
+  if (child_pid != -1) {
+    char* child_cwd = getcwd_by_pid(child_pid);
+    if (strcmp(child_cwd, "/") == 0) {
+      sprintf(summary, "%s@/", cmd);
+    } else {
+      char* segs[256] = {NULL};
+      size_t length = ssplit(child_cwd, "/", segs);
+      if (length > 0) {
+        sprintf(summary, "%s@%s", cmd, segs[length-1]);
+      }
+    }
+    free(child_cwd);
+  } else if (shell_pid != -1) {
+    char* child_cwd = getcwd_by_pid(shell_pid);
+    printf("DEBUG: child cwd: %s\n", child_cwd);
+    if (strcmp(child_cwd, "/") == 0) {
+      summary[0] = '/';
+      summary[1] = '\0';
+    } else {
+      char* segs[256] = {NULL};
+      size_t length = ssplit(child_cwd, "/", segs);
+      if (length > 0) {
+        sprintf(summary, "%s", segs[length-1]);
+      }
+    }
+    free(child_cwd);
+  }
 }
