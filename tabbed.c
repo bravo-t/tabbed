@@ -183,6 +183,7 @@ static const char *geometry;
 
 char *argv0;
 
+static uid_t uid = 0;
 static Bool update_summary = True;
 
 /* configuration, allows nested code to access above variables */
@@ -1044,6 +1045,8 @@ setup(void)
 	wmatom[XEmbed] = XInternAtom(dpy, "_XEMBED", False);
   wmatom[WMPID] = XInternAtom(dpy, "_NET_WM_PID", False);
 
+  uid = geteuid();
+
 	/* init appearance */
 	wx = 0;
 	wy = 0;
@@ -1510,9 +1513,12 @@ find_child_pid(pid_t ppid)
   DIR* dp = opendir("/proc");
   if (dp != NULL) {
     while ((ep = readdir(dp)) != NULL) {
+      if (ep->d_name[0] < '0' || ep->d_name[0] > '9') {
+        continue;
+      }
       sprintf(path_buffer, "/proc/%s", ep->d_name);
       stat(path_buffer, &path_stat);
-      if (S_ISDIR(path_stat.st_mode)) {
+      if (path_stat.st_uid == uid && S_ISDIR(path_stat.st_mode)) {
         sprintf(path_buffer, "/proc/%s/status", ep->d_name);
         if (is_ppid_match(path_buffer, ppid) == True) {
           const char* cpid_str = ep->d_name;
