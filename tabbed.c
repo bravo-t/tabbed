@@ -183,6 +183,8 @@ static const char *geometry;
 
 char *argv0;
 
+static Bool update_summary = True;
+
 /* configuration, allows nested code to access above variables */
 #include "config.h"
 
@@ -932,6 +934,7 @@ resize(int c, int w, int h)
 void
 rotate(const Arg *arg)
 {
+  update_summary = False;
 	int nsel = -1;
 
 	if (sel < 0)
@@ -949,6 +952,7 @@ rotate(const Arg *arg)
 			nsel += nclients;
 		focus(nsel);
 	}
+  update_summary = True;
 }
 
 void
@@ -1696,23 +1700,25 @@ get_child_summary(pid_t cpid, char* summary)
 void 
 update_client_summary(Client* c)
 {
-  if (is_cached_cpid_valid(c->spid, c->pid) == False) {
-    printf("DEBUG: Both spid and cpid for pid %d is not valid\n", c->pid);
-    get_client_summary_raw(c->pid, c->summary, &(c->spid), &(c->cpid));
-  } else if (is_cached_cpid_valid(c->cpid, c->spid) == False) {
-    printf("DEBUG: spid %d is valid for pid %d, cpid is not\n", c->spid, c->pid);
-    pid_t cpid = find_child_pid(c->spid);
-    if (cpid != c->cpid) {
-      c->cpid = cpid;
-      printf("DEBUG: cpid %d found\n", cpid);
-      if (cpid == -1) {
-        get_shell_summary(c->spid, c->summary);
-      } else {
-        get_child_summary(cpid, c->summary);
+  if (update_summary == True) {
+    if (is_cached_cpid_valid(c->spid, c->pid) == False) {
+      printf("DEBUG: Both spid and cpid for pid %d is not valid\n", c->pid);
+      get_client_summary_raw(c->pid, c->summary, &(c->spid), &(c->cpid));
+    } else if (is_cached_cpid_valid(c->cpid, c->spid) == False) {
+      printf("DEBUG: spid %d is valid for pid %d, cpid is not\n", c->spid, c->pid);
+      pid_t cpid = find_child_pid(c->spid);
+      if (cpid != c->cpid) {
+        c->cpid = cpid;
+        printf("DEBUG: cpid %d found\n", cpid);
+        if (cpid == -1) {
+          get_shell_summary(c->spid, c->summary);
+        } else {
+          get_child_summary(cpid, c->summary);
+        }
       }
+    } else {
+      printf("DEBUG: spid %d and cpid %d is valid for pid %d\n", c->spid, c->cpid, c->pid);
     }
-  } else {
-    printf("DEBUG: spid %d and cpid %d is valid for pid %d\n", c->spid, c->cpid, c->pid);
   }
   if (c->summary[0] == '\0') {
     strcpy(c->summary, c->name);
