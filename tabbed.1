@@ -6,6 +6,8 @@ tabbed \- generic tabbed interface
 .RB [ \-c ]
 .RB [ \-d ]
 .RB [ \-k ]
+.RB [ \-a
+.IR winid ]
 .RB [ \-s ]
 .RB [ \-v ]
 .RB [ \-g
@@ -37,6 +39,14 @@ argument. (See EXAMPLES.) The automatic spawning of the command can be
 disabled by providing the -s parameter. If no command is provided
 tabbed will just print its xid and run no command.
 .SH OPTIONS
+.TP
+.BI \-a " winid"
+adopt the already-existing X window
+.I winid
+as the first tab, instead of spawning
+.IR command .
+Implies -s. This is how the Ctrl-P pop-out keybinding hands a running tab to a
+new tabbed instance; the window must not currently be managed by another tabbed.
 .TP
 .B \-c
 close tabbed when the last tab is closed. Mutually exclusive with -f.
@@ -138,6 +148,11 @@ an already existing tab.
 .B Ctrl\-q
 close tab
 .TP
+.B Ctrl\-P
+pop the selected tab out into a new tabbed window, without restarting the
+program running inside it. Does nothing when only one tab is left. Note that
+tabbed grabs this key, so Ctrl\-P no longer reaches the application in a tab.
+.TP
 .B Ctrl\-u
 focus next urgent tab
 .TP
@@ -168,4 +183,11 @@ See the LICENSE file for the terms of redistribution.
 .BR st (1),
 .BR xembed (1)
 .SH BUGS
+During a Ctrl\-P pop-out the window is briefly parked, unmapped, on the root
+window while the new tabbed starts. If that new instance fails to start, the
+window is left there: tabbed prints its id to stderr, and
+.B xdotool windowmap
+.I id
+brings it back.
+.PP
 Please report them.

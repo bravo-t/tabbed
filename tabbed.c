@@ -96,6 +96,7 @@ typedef struct {
 } Client;
 
 /* function declarations */
+static void adopt(Window w);
 static void buttonpress(const XEvent *e);
 static void cleanup(void);
 static void clientmessage(const XEvent *e);
@@ -103,6 +104,7 @@ static void configurenotify(const XEvent *e);
 static void configurerequest(const XEvent *e);
 static void createnotify(const XEvent *e);
 static void destroynotify(const XEvent *e);
+static void detachtab(const Arg *arg);
 static void die(const char *errstr, ...);
 static void drawbar(void);
 static void drawtext(const char *text, XftColor col[ColLast]);
@@ -131,10 +133,12 @@ static void propertynotify(const XEvent *e);
 static void resize(int c, int w, int h);
 static void rotate(const Arg *arg);
 static void run(void);
+static char *selfpath(void);
 static void sendxembed(int c, long msg, long detail, long d1, long d2);
 static void setcmd(int argc, char *argv[], int);
 static void setup(void);
 static void spawn(const Arg *arg);
+static pid_t spawnpid(const Arg *arg);
 static int textnw(const char *text, unsigned int len);
 static void toggle(const Arg *arg);
 static void unmanage(int c);
@@ -181,6 +185,17 @@ static char **cmd;
 static char *wmname = "tabbed";
 static const char *geometry;
 
+/* -a: window handed over by another tabbed instance, adopted at startup. */
+static Window adoptwin = None;
+/* Window we just handed to another instance. Guards against re-adopting it
+ * from a MapRequest that was already queued when we let go. */
+static Window lastdetached = None;
+/* Snapshot of argv taken before ARGBEGIN, which mutates the array in place
+ * (arg.h:24,26 do argv[0]++). detachtab() rebuilds the original invocation
+ * from this so the new session inherits our flags and command. */
+static char **origargv;
+static int origargc;
+
 char *argv0;
 
 static uid_t uid = 0;
@@ -188,6 +203,27 @@ static Bool update_summary = True;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
+
+/* Take over a window that already exists -- handed to us by the detachtab()
+ * of another tabbed instance. Must run after XSetErrorHandler() so a stale
+ * window id comes back as a failed request rather than an abort.
+ *
+ * The checks are not paranoia: XReparentWindow/BadMatch is *not* in xerror()'s
+ * ignore list, so reparenting across roots would exit(). And a dead window
+ * would leave a permanent phantom tab, since every request against it fails
+ * silently as BadWindow. */
+void
+adopt(Window w)
+{
+	XWindowAttributes wa;
+
+	if (!XGetWindowAttributes(dpy, w, &wa))
+		die("%s: window 0x%lx does not exist\n", argv0, w);
+	if (wa.root != root)
+		die("%s: window 0x%lx is on another screen\n", argv0, w);
+
+	manage(w);
+}
 
 void
 buttonpress(const XEvent *e)
@@ -323,6 +359,80 @@ destroynotify(const XEvent *e)
 
 	if ((c = getclient(ev->window)) > -1)
 		unmanage(c);
+}
+
+/* Hand the selected tab to a brand new tabbed instance, without restarting
+ * the program inside it. Nothing here may fail once the X surgery starts, so
+ * all allocation and path resolution happens up front. */
+void
+detachtab(const Arg *arg)
+{
+	Window w;
+	int i;
+	char wid[32], *self, **nargv;
+	Arg a;
+
+	/* Popping out the only tab just trades one window for another, and with
+	 * -c (closelastclient) it would tear down this whole session. */
+	if (sel < 0 || nclients <= 1)
+		return;
+
+	/* --- everything that can fail, before we touch X --- */
+	self = selfpath();
+	/* A bare name is left to execvp's PATH search; a path we can check. */
+	if (strchr(self, '/') && access(self, X_OK) != 0) {
+		fprintf(stderr, "%s: cannot re-exec %s\n", argv0, self);
+		return;
+	}
+
+	w = clients[sel]->win;
+	snprintf(wid, sizeof wid, "0x%lx", w);
+
+	/* new argv: <self> -a <wid> <our own original args...> */
+	nargv = ecalloc(origargc + 3, sizeof *nargv);
+	nargv[0] = self;
+	nargv[1] = "-a";
+	nargv[2] = wid;
+	for (i = 1; i < origargc; i++)
+		nargv[i + 2] = origargv[i];
+
+	/* --- point of no return --- */
+
+	/* Drop the tab first. win carries SubstructureNotifyMask, so the
+	 * XUnmapWindow below delivers an UnmapNotify that would otherwise
+	 * unmanage() this client a second time; after this, getclient(w) is -1
+	 * and that event is a no-op. */
+	unmanage(sel);
+	lastdetached = w;
+
+	/* Release our passive grabs (this only touches grabs made by us, never
+	 * the embedded app's). Skipping this makes the new instance's XGrabKey
+	 * fail BadAccess -- which xerror() swallows, leaving a window with
+	 * silently dead keybindings. */
+	XUngrabKey(dpy, AnyKey, AnyModifier, w);
+	XSelectInput(dpy, w, NoEventMask);
+
+	/* Unmap *before* reparenting: XReparentWindow re-maps a window that was
+	 * mapped, and that automatic map on root is subject to the window
+	 * manager's redirect, which would make the WM adopt the terminal as a
+	 * normal top-level and fight the new tabbed for it. */
+	XUnmapWindow(dpy, w);
+	XReparentWindow(dpy, w, root, 0, 0);
+	XSync(dpy, False); /* server has processed the ungrab before we fork */
+
+	a.v = nargv;
+	if (spawnpid(&a) < 0) {
+		/* Could not fork: take the tab back rather than orphan it. */
+		fprintf(stderr, "%s: fork failed, reattaching 0x%lx\n", argv0, w);
+		lastdetached = None;
+		manage(w);
+	} else {
+		/* If the new instance dies during its own setup the window is
+		 * left unmapped on root; this id is the only way back to it
+		 * (xdotool windowmap <id>). */
+		fprintf(stderr, "%s: detached 0x%lx\n", argv0, w);
+	}
+	free(nargv); /* the child got its own copy at fork() */
 }
 
 void
@@ -820,6 +930,11 @@ maprequest(const XEvent *e)
 {
 	const XMapRequestEvent *ev = &e->xmaprequest;
 
+	/* Never re-adopt a window we just handed to another instance: its
+	 * MapRequest may have been queued before we let go. */
+	if (ev->window == lastdetached)
+		return;
+
 	if (getclient(ev->window) < 0)
 		manage(ev->window);
 }
@@ -1139,12 +1254,46 @@ setup(void)
 	focus(-1);
 }
 
+/* Absolute path to this binary, so detachtab() can re-exec us even when we
+ * were started as a relative "./tabbed". Falls back to argv0, which execvp
+ * will PATH-search. This file already hard-depends on Linux /proc (see
+ * getcwd_by_pid, find_child_pid), so this adds no new constraint. */
+char *
+selfpath(void)
+{
+	static char buf[PATH_MAX];
+	static const char deleted[] = " (deleted)";
+	ssize_t n;
+
+	n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0'; /* readlink does not NUL-terminate */
+		/* an unlinked binary reads back as "<path> (deleted)" */
+		if (n > (ssize_t)sizeof(deleted) - 1 &&
+		    !strcmp(buf + n - (sizeof(deleted) - 1), deleted))
+			buf[n - (sizeof(deleted) - 1)] = '\0';
+		if (access(buf, X_OK) == 0)
+			return buf;
+	}
+
+	return argv0;
+}
+
 void
 spawn(const Arg *arg)
 {
-	struct sigaction sa;
+	spawnpid(arg);
+}
 
-	if (fork() == 0) {
+/* As spawn(), but reports whether the fork succeeded. spawn() keeps its
+ * void(const Arg *) signature because keys[] depends on it. */
+pid_t
+spawnpid(const Arg *arg)
+{
+	struct sigaction sa;
+	pid_t pid;
+
+	if ((pid = fork()) == 0) {
 		if(dpy)
 			close(ConnectionNumber(dpy));
 
@@ -1328,19 +1477,37 @@ xsettitle(Window w, const char *str)
 void
 usage(void)
 {
-	die("usage: %s [-dfksv] [-g geometry] [-n name] [-p [s+/-]pos]\n"
-	    "       [-r narg] [-o color] [-O color] [-t color] [-T color]\n"
-	    "       [-u color] [-U color] command...\n", argv0);
+	die("usage: %s [-cdfksv] [-a winid] [-g geometry] [-n name]\n"
+	    "       [-p [s+/-]pos] [-r narg] [-o color] [-O color]\n"
+	    "       [-t color] [-T color] [-u color] [-U color] command...\n",
+	    argv0);
 }
 
 int
 main(int argc, char *argv[])
 {
 	Bool detach = False;
-	int replace = 0;
-	char *pstr;
+	int replace = 0, i;
+	char *pstr, *end;
+
+	/* ARGBEGIN parses in place (arg.h:24,26 do argv[0]++, which rewrites the
+	 * array element), so the original option strings are unreachable
+	 * afterwards. Snapshot the pointers now; detachtab() rebuilds our
+	 * invocation from them. argv0 is set here too because ecalloc's die()
+	 * formats with it and ARGBEGIN has not assigned it yet. */
+	argv0 = argv[0];
+	origargc = argc;
+	origargv = ecalloc(argc + 1, sizeof *origargv);
+	for (i = 0; i < argc; i++)
+		origargv[i] = argv[i];
 
 	ARGBEGIN {
+	case 'a':
+		adoptwin = strtoul(EARGF(usage()), &end, 0);
+		if (*end != '\0' || adoptwin == None)
+			usage();
+		doinitspawn = False;
+		break;
 	case 'c':
 		closelastclient = True;
 		fillagain = False;
@@ -1415,6 +1582,8 @@ main(int argc, char *argv[])
 		die("%s: cannot open display\n", argv0);
 
 	setup();
+	if (adoptwin != None)
+		adopt(adoptwin);
 	fflush(NULL);
 
 	if (detach) {
