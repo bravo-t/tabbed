@@ -267,9 +267,11 @@ configurenotify(const XEvent *e)
 	if (ev->window == win && (ev->width != ww || ev->height != wh)) {
 		ww = ev->width;
 		wh = ev->height;
-		XFreePixmap(dpy, dc.drawable);
-		dc.drawable = XCreatePixmap(dpy, root, ww, wh,
-		              DefaultDepth(dpy, screen));
+		if (ww > 0 && wh > 0) {
+			XFreePixmap(dpy, dc.drawable);
+			dc.drawable = XCreatePixmap(dpy, root, ww, wh,
+			              DefaultDepth(dpy, screen));
+		}
 
 		if (!obh && (wh <= bh)) {
 			obh = bh;
@@ -341,6 +343,10 @@ drawbar(void)
 	int c, cc, fc, width;
 	char *name = NULL;
   char summary[4096] = {'\0'};
+
+	/* Nothing valid to draw into; skip to avoid BadDrawable on X_CopyArea. */
+	if (ww <= 0 || bh <= 0)
+		return;
 
 	if (nclients == 0) {
 		dc.x = 0;
@@ -1099,6 +1105,11 @@ setup(void)
 	             SubstructureRedirectMask);
 	xerrorxlib = XSetErrorHandler(xerror);
 
+	/* DEBUG: set TABBED_XSYNC=1 to report X errors synchronously, so the
+	 * error handler fires on the exact request that caused them. */
+	if (getenv("TABBED_XSYNC"))
+		XSynchronize(dpy, True);
+
 	class_hint.res_name = wmname;
 	class_hint.res_class = "tabbed";
 	XSetClassHint(dpy, win, &class_hint);
@@ -1605,6 +1616,9 @@ get_client_summary_raw(pid_t client_pid, char* summary,
     char* child_cwd = getcwd_by_pid(child_pid);
     *spid = shell_pid;
     *cpid = child_pid;
+    if (child_cwd == NULL) {
+      return;
+    }
     if (strcmp(child_cwd, "/") == 0) {
       sprintf(summary, "%s@/", cmd);
     } else {
@@ -1619,6 +1633,9 @@ get_client_summary_raw(pid_t client_pid, char* summary,
     *spid = shell_pid;
     *cpid = child_pid;
     char* child_cwd = getcwd_by_pid(shell_pid);
+    if (child_cwd == NULL) {
+      return;
+    }
     if (strcmp(child_cwd, "/") == 0) {
       summary[0] = '/';
       summary[1] = '\0';
@@ -1654,6 +1671,10 @@ void
 get_shell_summary(pid_t spid, char* summary)
 {
   char* child_cwd = getcwd_by_pid(spid);
+  if (child_cwd == NULL) {
+    summary[0] = '\0';
+    return;
+  }
   if (strcmp(child_cwd, "/") == 0) {
     summary[0] = '/';
     summary[1] = '\0';
@@ -1673,6 +1694,10 @@ get_child_summary(pid_t cpid, char* summary)
   char cmd[4096] = {'\0'};
   get_cmd_from_pid(cpid, cmd);
   char* child_cwd = getcwd_by_pid(cpid);
+  if (child_cwd == NULL) {
+    summary[0] = '\0';
+    return;
+  }
   if (strcmp(child_cwd, "/") == 0) {
     sprintf(summary, "%s@/", cmd);
   } else {
